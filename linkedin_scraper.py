@@ -12,23 +12,28 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException
+from selenium.common.exceptions import StaleElementReferenceException
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium_stealth import stealth
 from langdetect import detect
 
 MAX_RESULTS_PAGES = 5 # number of pages of results to extract from
-JOB_TERMS = ["software developer", "programmer"]
-LOCATION_TERMS = ["Scotland", "Norway", "Germany"]
-FILTER_TERMS = ["junior", "senior", "postdoctoral", "intern", "trainee", "student", "scholarship", "study"]
-DATE_FILTER = "Past week" # Values: "Any time", "Past month", "Past week", "Past 24 hours"
+JOB_TERMS = ["web development", "data science"]
+LOCATION_TERMS = ["United Kingdom", "Norway", "Germany", "Thailand", "Philippines", "Costa Rica"]
+FILTER_TERMS = ["junior", "senior", "thesis", "postdoctor", "PhD", "intern", "trainee", "student", "scholarship", "study"]
+DATE_FILTER = "Past 24 hours" # Values: "Any time", "Past month", "Past week", "Past 24 hours"
 CSV_PATH = f"./jobs_{datetime.now().strftime('%y-%m-%d_%H-%M')}.csv"
 LANG = "en" # language of jobs
 
 options = Options()
-options.add_argument("--memory-model-cache-size-mb=512")
+options.add_argument("--memory-model-cache-size-mb=4096")
 options.add_argument("--enable-javascript")
+options.add_argument("--disable-web-security")
 options.add_experimental_option("excludeSwitches", ["enable-automation"])
 options.add_experimental_option("useAutomationExtension", False)
+options.timeouts = { 'script': 5000 }
+options.timeouts = { 'pageLoad': 60000 }
+options.timeouts = { 'implicit': 5000 }
 # Change for Windows
 # driver = webdriver.Chrome(executable_path=driver_path, options=options)
 driver = webdriver.Chrome(options=options)
@@ -179,7 +184,7 @@ driver.get("https://www.linkedin.com/jobs/search")
 driver.maximize_window()  # Maximize the browser window for better visibility
 
 try:
-    job_field = WebDriverWait(driver, 180).until(EC.presence_of_element_located((By.XPATH, "//input[contains(@id, 'jobs-search-box-keyword-id-ember')]")))
+    WebDriverWait(driver, 180).until(EC.presence_of_element_located((By.XPATH, "//input[contains(@id, 'jobs-search-box-keyword-id-ember')]")))
 except TimeoutException:
     print("Loading took too much time!")
     driver.quit()
@@ -188,26 +193,36 @@ except TimeoutException:
 added_urls = [] # holds the completed listings to eliminate duplicates
 
 for job_term in JOB_TERMS:
-    for location_term in LOCATION_TERMS:
-
-        # Fill in search fields
-        location_field = driver.find_element(By.XPATH, "//input[contains(@id, 'jobs-search-box-location-id-ember')]")
-        location_field.clear()
-        location_field.send_keys(location_term)
-        location_field.send_keys(Keys.RETURN)
-        time.sleep(2)
-
+    try:
+        job_field = driver.find_element(By.XPATH, "//input[contains(@id, 'jobs-search-box-keyword-id-ember')]")
         job_field.clear()
+        time.sleep(1)
         job_field.send_keys(job_term)
         job_field.send_keys(Keys.RETURN)
-        time.sleep(2)
+        time.sleep(1)
+    except Exception as e:
+        print("Failed to fill job field")
+        continue
 
-        try: # Filter by date
-            driver.find_element(By.XPATH, "//button[contains(@id, 'searchFilter_timePostedRange')]").click()
+    for location_term in LOCATION_TERMS:
+        try:
+            location_field = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.XPATH, "//input[contains(@id, 'jobs-search-box-location-id-ember')]")))
+            location_field.clear()
+            time.sleep(1)
+            location_field.send_keys(location_term)
+            location_field.send_keys(Keys.RETURN)
+            time.sleep(1)
+        except Exception as e:
+            print("Failed to fill location field")
+            continue
+
+        # Filter by date
+        try:
+            WebDriverWait(driver, 10).until(EC.element_to_be_clickable((By.XPATH, "//button[contains(@id, 'searchFilter_timePostedRange')]"))).click()
             time.sleep(2)
-            driver.find_element("xpath", f"//input[@name='date-posted-filter-value']//following::span[text()='{DATE_FILTER}']").click()
+            WebDriverWait(driver, 10).until(EC.element_to_be_clickable((By.XPATH, f"//input[@name='date-posted-filter-value']//following::span[text()='{DATE_FILTER}']"))).click()
             time.sleep(2)
-            driver.find_element(By.XPATH, "//button[contains(@aria-label, 'Apply current filter')]").click()
+            WebDriverWait(driver, 10).until(EC.element_to_be_clickable((By.XPATH, "//button[contains(@aria-label, 'Apply current filter')]"))).click()
             time.sleep(2)
         except Exception as e:
             print("Unable to click on date filter")
@@ -216,40 +231,60 @@ for job_term in JOB_TERMS:
         for i in range(1,MAX_RESULTS_PAGES):
             print(f"Page{i}\n")
             # Find all job card links
-            job_list_items = driver.find_elements(By.XPATH, "//li[contains(@class, 'ember-view')]")
+            try:
+                job_list_items = driver.find_elements(By.XPATH, "//li[starts-with(@class, 'ember-view')]")
+                if job_list_items is False or len(job_list_items) == 0:
+                    continue
+            except Exception as e:
+                print("Failed to find list items")
+                continue
 
             # Loop through each link
-            for list_item in job_list_items: 
+            for i, list_item in enumerate(job_list_items):
+                l = len(job_list_items)
+                print(f"\nList item {i} out of {l} items.\n")
                 try:
-                    actions.move_to_element(list_item).perform()
-                    WebDriverWait(driver, 10).until(
-                        EC.element_to_be_clickable(list_item)
-                    )
-                    list_item.click()
-                    time.sleep(3)
-
-                    content = driver.find_element(By.XPATH, "//div[contains(@class, 'jobs-details__main-content')]")  
-                        
-                    soup = BeautifulSoup(content.get_attribute('outerHTML'), "html.parser")
-                    job_data = extract_job_data(soup)
-                    if job_data is not False and job_data['url'] not in added_urls:
-                        print("\nAdding job\n")
-                        print(job_data)
-                        append_job_to_csv(job_data)
-                        added_urls.append(job_data['url'])
-
+                    if list_item.is_displayed() is False:
+                        list_item.scroll_to_element()
+                        time.sleep(1)
+                    if list_item.is_displayed() and list_item.is_enabled():
+                        ActionChains(driver).move_to_element(list_item).click().perform()
+                        time.sleep(2)
                 except Exception as e:
-                    print(f"Error clicking link: {e}")
+                    print(f"Error clicking list item")
                     continue
+
+                # Get the content
+                print("finding content")
+                try:
+                    content = driver.find_element(By.XPATH, "//div[contains(@class, 'jobs-details__main-content')]")
+                except Exception as e:
+                    print(f"Error finding content")
+                    continue
+                print("Content found")
+                soup = BeautifulSoup(content.get_attribute('outerHTML'), "html.parser")
+                job_data = extract_job_data(soup)
+                if job_data is not False and job_data['url'] not in added_urls:
+                    print("\nAdding job data\n")
+                    # print(job_data)
+                    append_job_to_csv(job_data)
+                    added_urls.append(job_data['url'])
 
             # Go to next page of jobs or exit loop if none
             try:
-                next_button = WebDriverWait(driver, 10).until(EC.element_to_be_clickable((By.XPATH, "//button[contains(@class, 'jobs-search-pagination__button--next')]")))
-                actions.move_to_element(next_button).perform()
-                next_button.click()
-                time.sleep(5)
+                next_button = driver.find_element(By.XPATH, "//button[contains(@class, 'jobs-search-pagination__button--next')]")
+                if next_button and next_button.is_displayed() and next_button.is_enabled():
+                    ActionChains(driver).scroll_to_element(next_button).move_to_element(next_button).click().perform()
+                    print("Next button clicked")
+                    time.sleep(5)
+                else:
+                    print("No next button found")
+                    time.sleep(5)
+                    break
             except Exception as e:
-                print("No next button found")
+                print(f"Error finding next button")
                 break
+        time.sleep(5)
 
+print("Scraping complete")
 driver.quit()
